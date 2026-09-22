@@ -34,8 +34,7 @@ from PyQt5.QtWidgets import (
 from .config import (load_last_identity, load_lists, load_overrides,
                      notify_refresh, register_refresh, save_last_identity,
                      run_brush, run_brush_blend, run_brush_value,
-                     run_composite_op, run_script, run_set_color,
-                     run_view_mode, view_mode_active, view_mode_label)
+                     run_composite_op, run_script, run_set_color)
 from .pie import PieWidget
 from .shortcuts import find_shortcut_file, unbind
 
@@ -538,11 +537,6 @@ class MenuBeltExtension(Extension):
                     label = entry.get("label", "") or os.path.splitext(sfile)[0]
                     slices.append((label, None, lambda f=sfile: run_script(f)))
                     continue
-                elif entry.get("viewmode") is not None:
-                    mode = entry.get("viewmode", "")
-                    label = entry.get("label", "") or view_mode_label(mode)
-                    slices.append((label, None, lambda m=mode: run_view_mode(m)))
-                    continue
                 elif entry.get("name") is not None:
                     continue  # submenu: not representable in a single-level pie (v1)
                 else:
@@ -799,14 +793,6 @@ class MenuBeltExtension(Extension):
                                     lambda f=fn: run_script(f))
                 if ident_map is not None:
                     ident_map[act] = ("script", fn)
-            elif entry.get("viewmode") is not None:
-                mode = entry.get("viewmode", "")
-                label = entry.get("label", "") or view_mode_label(mode)
-                act = self._add_row(parent_menu, label, None,
-                                    lambda m=mode: run_view_mode(m),
-                                    checkable=True, checked=view_mode_active(mode))
-                if ident_map is not None:
-                    ident_map[act] = ("viewmode", mode)
             elif entry.get("name") is not None:
                 sub = parent_menu.addMenu(entry["name"])
                 self._build_menu_node(sub, entry, ident_map, show_icons)

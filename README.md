@@ -19,9 +19,8 @@ Or watch on [YouTube](https://youtu.be/hjSDBv3bs3Q).
 ## Highlights
 
 - **Native Krita actions** — icons, state and shortcut hints inherited automatically.
-- **Eight "Add" sources** — Krita Actions, Layer & Brush Blend Modes, Brush Values, Colour swatches, Brushes, **Scripts** and **View Mode**.
-- **Script library** — write, edit, rename and run your own Python from a menu item; scripts live as plain `.py` files next to the plugin.
-- **View modes** — toggle a non-destructive display mode (e.g. *Luminosity (ITU-R BT.709)*) as a filter layer, never by painting into your layers.
+- **Seven "Add" sources** — Krita Actions, Layer & Brush Blend Modes, Brush Values, Colour swatches, Brushes, **Scripts**.
+- **Script library** — write, edit, rename and run your own Python from a menu item; scripts are plain `.py` files next to the plugin, so a new menu command is a new *file* instead of a plugin change. Ships with `luminosity_view.py`, which toggles a non-destructive *Luminosity (ITU-R BT.709)* view (a filter layer on top of the stack — your layers are never painted into).
 - **List or Pie** — linear menus, or a radial pie (up to 8 items).
 - **Nested menus** — submenus, headers, separators and checkable toggles.
 - **Per-list shortcuts** — bind hotkeys in-editor, no Krita shortcut dialog needed.
@@ -47,7 +46,7 @@ Or watch on [YouTube](https://youtu.be/hjSDBv3bs3Q).
 ## Quick start
 
 **Tools → MenuBelt → Configure MenuBelt**, pick a list, add items from a source
-(Krita Actions, Blend Modes, Brush Values, Palettes, Brushes, Scripts, View Mode) or **Add Submenu /
+(Krita Actions, Blend Modes, Brush Values, Palettes, Brushes, Scripts) or **Add Submenu /
 Header / Separator / Toggle**, then **drag to reorder** and **double-click** to rename.
 
 Bind a list shortcut by clicking its *Shortcut* field; the whole-menu trigger lives in

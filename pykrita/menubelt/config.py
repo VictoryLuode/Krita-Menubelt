@@ -14,11 +14,6 @@ import traceback
 
 from krita import Krita
 
-try:                      # Selection is part of the Krita scripting API
-    from krita import Selection
-except ImportError:       # pragma: no cover - very old Krita builds
-    Selection = None
-
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(PLUGIN_DIR, "config.json")
 
@@ -215,9 +210,6 @@ def _clean_items(items):
             elif it.get("script") is not None:
                 out.append({"script": it.get("script", ""),
                             "label": it.get("label", "") or ""})
-            elif it.get("viewmode") is not None:
-                out.append({"viewmode": it.get("viewmode", ""),
-                            "label": it.get("label", "") or ""})
             elif it.get("name") is not None:
                 out.append({
                     "name": it.get("name", ""),
@@ -281,9 +273,6 @@ def _serialize_items(items):
                         "label": it.get("label", "") or ""})
         elif it.get("script") is not None:
             out.append({"script": it.get("script", ""),
-                        "label": it.get("label", "") or ""})
-        elif it.get("viewmode") is not None:
-            out.append({"viewmode": it.get("viewmode", ""),
                         "label": it.get("label", "") or ""})
         elif it.get("name") is not None:
             out.append({
@@ -796,122 +785,6 @@ def run_script(name):
         traceback.print_exc()
         lines = [ln for ln in traceback.format_exc().strip().splitlines() if ln.strip()]
         _report("Script failed", "%s\n\n%s" % (fn, "\n".join(lines[-2:])))
-
-
-# ---------- View modes (non-destructive display overlays) ----------
-# A view mode builds a filter layer on top of the stack; triggering the same
-# item again removes it. The canvas data is never touched.
-VIEW_MODES = [
-    ("luminosity", "Luminosity View (ITU-R BT.709)"),
-]
-VIEW_LAYER_PREFIX = "MenuBelt View"
-# Desaturate filter ('desaturate') config: 'type' picks the method;
-# 1 = Luminosity (ITU-R BT.709)  (plugins/filters/colorsfilters).
-DESATURATE_LUMINOSITY_BT709 = 1
-
-
-def view_mode_label(mode_id):
-    return dict(VIEW_MODES).get(mode_id, mode_id)
-
-
-def view_layer_name(mode_id):
-    return f"{VIEW_LAYER_PREFIX} \u00b7 {view_mode_label(mode_id)}"
-
-
-def _walk_nodes(node):
-    stack = [node]
-    while stack:
-        current = stack.pop()
-        if current is None:
-            continue
-        yield current
-        try:
-            stack.extend(current.childNodes())
-        except Exception:
-            continue
-
-
-def find_view_layer(mode_id, doc=None):
-    """Return the existing view layer for mode_id, or None."""
-    try:
-        if doc is None:
-            doc = Krita.instance().activeDocument()
-    except Exception:
-        return None
-    if doc is None:
-        return None
-    wanted = view_layer_name(mode_id)
-    for node in _walk_nodes(doc.rootNode()):
-        try:
-            if node.name() == wanted:
-                return node
-        except Exception:
-            continue
-    return None
-
-
-def view_mode_active(mode_id):
-    return find_view_layer(mode_id) is not None
-
-
-def _create_view_layer(doc, mode_id):
-    """Build the view layer for mode_id at the top of the stack, or None."""
-    if mode_id != "luminosity" or Selection is None:
-        return None
-    try:
-        filt = Krita.instance().filter("desaturate")
-    except Exception:
-        filt = None
-    if filt is None:
-        return None
-    try:
-        selection = Selection()
-        selection.selectAll(doc.rootNode(), 255)
-        layer = doc.createFilterLayer(view_layer_name(mode_id), filt, selection)
-    except Exception as e:
-        print(f"MenuBelt: createFilterLayer failed: {e}")
-        return None
-    if layer is None:
-        return None
-    try:
-        doc.rootNode().addChildNode(layer, None)
-    except Exception as e:
-        print(f"MenuBelt: adding the view layer failed: {e}")
-        return None
-    # The layer owns its own filter configuration: configure it via layer.filter()
-    # (property changes on the object from Krita.instance().filter() are a no-op).
-    try:
-        live = layer.filter()
-        config = live.configuration()
-        config.setProperty("type", DESATURATE_LUMINOSITY_BT709)
-        live.setConfiguration(config)
-    except Exception as e:
-        print(f"MenuBelt: configuring the view layer failed: {e}")
-    return layer
-
-
-def run_view_mode(mode_id):
-    """Toggle a view mode: create the overlay layer, or remove it when present."""
-    if not isinstance(mode_id, str) or not mode_id:
-        return
-    try:
-        doc = Krita.instance().activeDocument()
-    except Exception:
-        return
-    if doc is None:
-        return
-    try:
-        existing = find_view_layer(mode_id, doc)
-        if existing is not None:
-            existing.remove()
-        elif _create_view_layer(doc, mode_id) is None:
-            _report("View mode unavailable",
-                    f"Krita refused to create the '{view_layer_name(mode_id)}' filter layer.")
-            return
-        doc.refreshProjection()
-    except Exception as e:
-        traceback.print_exc()
-        _report("View mode failed", str(e))
 
 
 # ---------- Refresh notification (reload Tools menu / Docker / shortcuts after editing) ----------

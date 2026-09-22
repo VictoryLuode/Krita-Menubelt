@@ -44,7 +44,6 @@ from .config import (
     LAYER_BLEND_MODES,
     SCRIPTS_DIR,
     SCRIPT_TEMPLATE,
-    VIEW_MODES,
     add_overrides,
     build_config_dict,
     catalog_actions,
@@ -62,7 +61,6 @@ from .config import (
     run_script,
     save_config,
     script_filename,
-    view_mode_label,
     write_script,
 )
 from .shortcuts import find_shortcut_file
@@ -85,7 +83,6 @@ TYPE_SEP = "sep"
 TYPE_HEADER = "header"
 TYPE_TOGGLE = "toggle"
 TYPE_SCRIPT = "script"
-TYPE_VIEWMODE = "viewmode"
 
 
 def _load_preset_tags():
@@ -298,28 +295,6 @@ def _add_script(dlg, payload):
     dlg._render_items()
 
 
-def _enum_view_modes(dlg, needle):
-    existing = {it.get("viewmode") for it in dlg._cur_items()
-                if isinstance(it, dict) and it.get("viewmode")}
-    for mode_id, label in VIEW_MODES:
-        if needle and needle not in label.lower() and needle not in mode_id.lower():
-            continue
-        if mode_id in existing:
-            continue
-        yield (mode_id, label)
-
-
-def _add_view_mode(dlg, payload):
-    mode_id = payload
-    existing = {it.get("viewmode") for it in dlg._cur_items()
-                if isinstance(it, dict) and it.get("viewmode")}
-    if mode_id in existing:
-        return
-    dlg._cur_items().append({"viewmode": mode_id,
-                             "label": view_mode_label(mode_id)})
-    dlg._render_items()
-
-
 ADD_SOURCES = [
     AddSource("actions", "Krita Actions", TYPE_CMD, _enum_actions, _add_action),
     AddSource("blend", "Layer Blend Mode", TYPE_BLEND, _enum_blend, _add_blend),
@@ -328,7 +303,6 @@ ADD_SOURCES = [
     AddSource("palette", "Krita Palettes", TYPE_COLOR, _enum_palettes, _add_color),
     AddSource("brush", "Brushes", TYPE_BRUSH, _enum_brushes, _add_brush),
     AddSource("script", "Scripts", TYPE_SCRIPT, _enum_scripts, _add_script),
-    AddSource("viewmode", "View Mode", TYPE_VIEWMODE, _enum_view_modes, _add_view_mode),
 ]
 
 
@@ -1161,8 +1135,6 @@ class ListMenuDialog(QDialog):
                 return "brush:" + (it.get("brush", "") or "")
             if it.get("script") is not None:
                 return "script:" + (it.get("script", "") or "")
-            if it.get("viewmode") is not None:
-                return "viewmode:" + (it.get("viewmode", "") or "")
             if it.get("name") is not None:
                 return it["name"]
         return None
@@ -1339,9 +1311,6 @@ class ListMenuDialog(QDialog):
                     text = it.get("label", "") or _script_label(fn)
                     if not os.path.exists(os.path.join(SCRIPTS_DIR, fn)):
                         text += "  (missing)"
-                elif it.get("viewmode") is not None:
-                    typ = TYPE_VIEWMODE
-                    text = it.get("label", "") or view_mode_label(it["viewmode"])
                 elif it.get("sep"):
                     typ, text = TYPE_SEP, ""
                 elif it.get("header") is not None:
@@ -1438,12 +1407,6 @@ class ListMenuDialog(QDialog):
                 "     layer/node injected" % (
                     _script_label(payload), path,
                     "found" if os.path.exists(path) else "MISSING"))
-        elif item.data(0, ROLE_TYPE) == TYPE_VIEWMODE and payload:
-            self.detail_box.setText(
-                "View mode: %s\n"
-                "Non-destructive: adds a filter layer on top of the stack.\n"
-                "Trigger the same item again to remove it.\n"
-                "API: Document.createFilterLayer('desaturate', type=1)" % view_mode_label(payload))
         else:
             self.detail_box.setText("")
 
