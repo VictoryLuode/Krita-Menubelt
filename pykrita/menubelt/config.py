@@ -314,9 +314,12 @@ def load_popup_shortcut():
 
 def save_config(popup_shortcut, lists):
     """Write popup_shortcut + multi-list model to JSON (compact item form)."""
+    old = {}
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            old = json.load(f)
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            old = loaded
         last_identity = old.get("last_identity")
     except (OSError, ValueError):
         last_identity = None
@@ -327,10 +330,67 @@ def save_config(popup_shortcut, lists):
         }
         if last_identity is not None:
             data["last_identity"] = last_identity
+        overrides = old.get("overrides") if isinstance(old, dict) else None
+        if overrides:
+            data["overrides"] = overrides
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except OSError as e:
         print(f"failed to save config: {e}")
+
+
+# ---------- Shortcut overrides (Krita bindings MenuBelt took over) ----------
+def _read_raw():
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_raw(data):
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except OSError as e:
+        print(f"failed to write config: {e}")
+        return False
+
+
+def load_overrides():
+    """Return {"<list name>": [record, ...]} of Krita shortcuts MenuBelt took over.
+
+    A record is {"id", "label", "key", "prev_runtime", "prev_file"} where
+    prev_file is the value that was in kritashortcutsrc (None = no entry, so
+    restoring means deleting ours and letting the built-in default return).
+    """
+    ov = _read_raw().get("overrides")
+    return ov if isinstance(ov, dict) else {}
+
+
+def add_overrides(list_name, records):
+    """Append `records` to the override history of `list_name`."""
+    data = _read_raw()
+    ov = data.get("overrides")
+    if not isinstance(ov, dict):
+        ov = {}
+    ov.setdefault(list_name or "", []).extend(records)
+    data["overrides"] = ov
+    return _write_raw(data)
+
+
+def pop_overrides(list_name):
+    """Return and drop the override history of `list_name` (used by Restore)."""
+    data = _read_raw()
+    ov = data.get("overrides")
+    if not isinstance(ov, dict):
+        return []
+    out = ov.pop(list_name or "", [])
+    data["overrides"] = ov
+    _write_raw(data)
+    return out
 
 
 def load_last_identity():

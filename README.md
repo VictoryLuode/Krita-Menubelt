@@ -23,6 +23,7 @@ Or watch on [YouTube](https://youtu.be/hjSDBv3bs3Q).
 - **List or Pie** — linear menus, or a radial pie (up to 8 items).
 - **Nested menus** — submenus, headers, separators and checkable toggles.
 - **Per-list shortcuts** — bind hotkeys in-editor, no Krita shortcut dialog needed.
+- **Shortcut takeover** — a key that is already taken can be overridden: the other binding is unbound automatically, and for a Krita action that removal survives a restart.
 - **Live preview · Export / Import · conflict detection.**
 
 ## Install

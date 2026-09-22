@@ -30,11 +30,12 @@ from PyQt5.QtWidgets import (
     QWidgetAction,
 )
 
-from .config import (load_last_identity, load_lists, notify_refresh,
-                     register_refresh, save_last_identity, run_brush,
-                     run_brush_blend, run_brush_value, run_composite_op,
-                     run_set_color)
+from .config import (load_last_identity, load_lists, load_overrides,
+                     notify_refresh, register_refresh, save_last_identity,
+                     run_brush, run_brush_blend, run_brush_value,
+                     run_composite_op, run_set_color)
 from .pie import PieWidget
+from .shortcuts import find_shortcut_file, unbind
 
 # Keys that on their own are modifiers, not real shortcuts
 _MODIFIER_KEYS = (
@@ -192,7 +193,10 @@ class _KeyFilter(QObject):
                 return False
             mods = event.modifiers()
             seq = QKeySequence(int(mods) | key)
-            self._ext.dispatch_shortcut(seq.toString(QKeySequence.PortableText))
+            # Consume keys we own: a key bound to a list must not *also* reach the
+            # canvas / another handler (that would make an override half-applied).
+            if self._ext.dispatch_shortcut(seq.toString(QKeySequence.PortableText)):
+                return True
         elif event.type() == QEvent.KeyRelease:
             if event.isAutoRepeat():
                 return False  # ignore auto-release pairs while held
@@ -293,6 +297,62 @@ class MenuBeltExtension(Extension):
                     self._shortcut_map[key] = (lambda n=name: self.pop_pie(n))
                 else:
                     self._shortcut_map[key] = (lambda n=name: self.pop_list(n))
+        self._reassert_overrides()
+
+    def _reassert_overrides(self):
+        """Re-take keys recorded as overridden when a Krita action holds one again.
+
+        Krita regenerates kritashortcutsrc whenever its shortcut editor is saved,
+        which can hand a key back to the built-in action. MenuBelt only ever
+        re-clears an action whose *current* shortcut is a key one of our active
+        lists still uses — a binding the user moved elsewhere is left alone.
+        """
+        try:
+            mine = {lst.get("shortcut") for lst in load_lists()
+                    if lst.get("active", True) and lst.get("shortcut")}
+        except Exception:
+            return
+        if not mine:
+            return
+        wanted = {}
+        for records in load_overrides().values():
+            for rec in records:
+                if rec.get("key") in mine:
+                    wanted[rec.get("id")] = rec
+        if not wanted:
+            return
+        try:
+            actions = Krita.instance().actions()
+        except Exception:
+            return
+        path = find_shortcut_file()
+        for a in actions:
+            try:
+                oid = a.objectName()
+            except RuntimeError:
+                continue
+            rec = wanted.get(oid)
+            if rec is None:
+                continue
+            try:
+                held = [s.toString(QKeySequence.PortableText) for s in a.shortcuts()]
+            except Exception:
+                held = []
+            if not held:
+                try:
+                    s = a.shortcut()
+                    held = [] if s.isEmpty() else [s.toString(QKeySequence.PortableText)]
+                except Exception:
+                    held = []
+            if rec.get("key") not in held:
+                continue          # the user rebound it: not ours to touch
+            try:
+                a.setShortcuts([])
+            except Exception:
+                pass
+            if path is not None:
+                unbind(path, oid)
+            print("menubelt: re-took %s from %s" % (rec.get("key"), oid))
 
     def _list_index_by_name(self, name):
         for i, lst in enumerate(load_lists()):
@@ -301,12 +361,18 @@ class MenuBeltExtension(Extension):
         return -1
 
     def dispatch_shortcut(self, seq_str):
-        """Called by the event filter with the pressed key sequence (PortableText)."""
+        """Called by the event filter with the pressed key sequence (PortableText).
+
+        Returns True when the key is one of ours — the caller then consumes the key
+        event, so nothing else (canvas input, another action) reacts to it too.
+        """
         if self._pie is not None or self._popup_active:
-            return  # a pie or list popup is already open
+            return False  # a pie or list popup is already open
         cb = self._shortcut_map.get(seq_str)
-        if cb is not None:
-            cb()
+        if cb is None:
+            return False
+        cb()
+        return True
 
     # ---------- Behaviour ----------
     def _active_menu(self):

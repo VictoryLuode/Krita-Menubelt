@@ -41,14 +41,20 @@ from .config import (
     BRUSH_BLEND_MODES,
     BRUSH_VALUES,
     LAYER_BLEND_MODES,
+    add_overrides,
     build_config_dict,
     catalog_actions,
     load_action_categories,
     load_config,
+    load_overrides,
     notify_refresh,
     parse_config_dict,
+    pop_overrides,
     save_config,
 )
+from .shortcuts import find_shortcut_file
+from .shortcuts import restore as restore_shortcuts
+from .shortcuts import unbind
 
 ROLE_INDEX = Qt.UserRole
 ROLE_TOKEN = Qt.UserRole + 1
@@ -330,11 +336,11 @@ class ListMenuDialog(QDialog):
         self._apply_default_size()
 
         self._catalog = dict(catalog_actions())
-        self._krita_shortcuts = self._collect_krita_shortcuts()
         self.popup_shortcut, self.lists = load_config()
         self.current = 0
         self.path = [self.lists[self.current]] if self.lists else []
         self._loading_sc = False
+        self._pending_overrides = {}   # list name -> [record] to apply on accept()
         self._brush_icons = {}      # preset name -> QIcon (or None)
         self._presets = None        # cached resources("preset") dict
         self._tags_loaded = False   # lazy: brush tag filter data
@@ -385,20 +391,176 @@ class ListMenuDialog(QDialog):
         self._persist_size()
         super().done(result)
 
+    # ---------- Shortcut conflicts / overrides ----------
     @staticmethod
-    def _collect_krita_shortcuts():
-        out = set()
+    def _shortcut_file():
+        """Path of Krita's kritashortcutsrc (None when it cannot be located)."""
         try:
-            for a in Krita.instance().actions():
-                try:
-                    s = a.shortcut().toString(QKeySequence.PortableText)
-                    if s:
-                        out.add(s)
-                except Exception:
-                    pass
+            from PyQt5.QtCore import QStandardPaths
+            qt_dirs = [QStandardPaths.writableLocation(loc) for loc in (
+                QStandardPaths.AppConfigLocation,
+                QStandardPaths.GenericConfigLocation,
+                QStandardPaths.AppDataLocation,
+            )]
+        except Exception:
+            qt_dirs = []
+        return find_shortcut_file(qt_dirs)
+
+    @staticmethod
+    def _action_shortcuts(action):
+        """PortableText list of an action's current shortcuts."""
+        out = []
+        try:
+            seqs = list(action.shortcuts())
+        except Exception:
+            seqs = []
+        if not seqs:
+            try:
+                s = action.shortcut()
+                seqs = [] if s.isEmpty() else [s]
+            except Exception:
+                seqs = []
+        for s in seqs:
+            txt = s.toString(QKeySequence.PortableText)
+            if txt:
+                out.append(txt)
+        return out
+
+    @staticmethod
+    def _clear_action_shortcuts(action):
+        """Drop every live shortcut from a Krita action (applies to the session)."""
+        try:
+            action.setShortcuts([])
         except Exception:
             pass
+        try:
+            action.setShortcut(QKeySequence())
+        except Exception:
+            pass
+
+    def _conflicts_for(self, key):
+        """[(kind, label, owner)] bound to `key`, excluding the list being edited."""
+        out = []
+        for i, lst in enumerate(self.lists):
+            if i != self.current and (lst.get("shortcut") or "") == key:
+                out.append(("list", lst.get("name") or "", lst))
+        try:
+            actions = Krita.instance().actions()
+        except Exception as e:
+            print("menubelt: cannot list actions: %s" % e)
+            actions = []
+        for a in actions:
+            try:
+                if key not in self._action_shortcuts(a):
+                    continue
+                label = (a.text() or a.objectName() or "").replace("&", "").strip()
+            except RuntimeError:
+                continue
+            out.append(("action", label or a.objectName(), a))
         return out
+
+    def _pending_action_ids(self):
+        return {r.get("id") for recs in self._pending_overrides.values() for r in recs}
+
+    def _ask_override(self, key, conflicts):
+        """Ask whether MenuBelt may take `key` over. True = override."""
+        pending = self._pending_action_ids()
+        rows = []
+        for kind, label, owner in conflicts:
+            if kind == "list":
+                rows.append("    \u2022 %s   (another MenuBelt menu)" % label)
+            elif owner.objectName() in pending:
+                rows.append("    \u2022 %s   (already being unbound)" % label)
+            else:
+                rows.append("    \u2022 %s" % label)
+        box = QMessageBox(self)
+        box.setWindowTitle("Shortcut conflict")
+        box.setIcon(QMessageBox.Warning)
+        box.setText("\u201c%s\u201d is already taken by:" % key)
+        box.setInformativeText(
+            "\n".join(rows) +
+            "\n\nOverride unbinds the other side automatically. A Krita action's "
+            "binding is written to kritashortcutsrc as \u201cnone\u201d, so it stays "
+            "unbound after a restart (use Restore in Menu Settings to get it back).")
+        take = box.addButton("Override", QMessageBox.AcceptRole)
+        keep = box.addButton("Pick another key", QMessageBox.RejectRole)
+        box.setDefaultButton(keep)
+        box.exec_()
+        return box.clickedButton() is take
+
+    def _apply_pending_overrides(self):
+        """Do the external (Krita-side) part of the overrides accepted in this dialog."""
+        if not self._pending_overrides:
+            return True
+        path = self._shortcut_file()
+        if path is None:
+            QMessageBox.warning(
+                self, "MenuBelt",
+                "Krita's kritashortcutsrc could not be found, so the removed "
+                "shortcuts will only last until Krita is restarted.")
+        records = []
+        for name, recs in list(self._pending_overrides.items()):
+            for rec in recs:
+                action = rec.get("action")
+                rec = {k: v for k, v in rec.items() if k != "action"}
+                if path is not None:
+                    rec["prev_file"] = unbind(path, rec["id"])
+                if action is not None:
+                    self._clear_action_shortcuts(action)
+                records.append((name, rec))
+        for name, rec in records:
+            add_overrides(name, [rec])
+        self._pending_overrides = {}
+        return True
+
+    def _update_undo_button(self):
+        if not hasattr(self, "undo_sc_btn"):
+            return
+        name = self.lists[self.current].get("name") if self.lists else None
+        self.undo_sc_btn.setEnabled(bool(load_overrides().get(name or "")))
+
+    def _restore_overrides(self):
+        """Give the Krita bindings back and clear this menu's key (avoids re-colliding)."""
+        if not self.lists:
+            return
+        name = self.lists[self.current].get("name") or ""
+        records = load_overrides().get(name) or []
+        if not records:
+            return
+        keys = sorted({r.get("key") for r in records if r.get("key")})
+        if QMessageBox.question(
+                self, "Restore shortcuts",
+                "Give the original Krita shortcut(s) back to:\n\n    %s\n\n"
+                "This also clears this menu's shortcut (%s) so the two no longer "
+                "collide." % (
+                    "\n    ".join("%s  \u2192  %s" % (r.get("label") or r.get("id"), r.get("key"))
+                                  for r in records),
+                    ", ".join(keys) or "-")
+        ) != QMessageBox.Yes:
+            return
+        path = self._shortcut_file()
+        if path is not None:
+            restore_shortcuts(path, {r["id"]: r.get("prev_file") for r in records})
+        try:
+            actions = {a.objectName(): a for a in Krita.instance().actions()}
+        except Exception:
+            actions = {}
+        for r in records:
+            act = actions.get(r.get("id"))
+            seqs = [QKeySequence.fromString(s, QKeySequence.PortableText)
+                    for s in (r.get("prev_runtime") or [])]
+            if act is not None and seqs:
+                try:
+                    act.setShortcuts(seqs)
+                except Exception as e:
+                    print("menubelt: cannot restore %s: %s" % (r.get("id"), e))
+        if (self.lists[self.current].get("shortcut") or "") in keys:
+            self.lists[self.current]["shortcut"] = ""
+            self._update_left_shortcut()
+        pop_overrides(name)
+        save_config(self.popup_shortcut, self.lists)
+        notify_refresh()
+        self._update_undo_button()
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -479,12 +641,20 @@ class ListMenuDialog(QDialog):
         sc_row.addWidget(QLabel("Shortcut:"))
         self.list_sc_edit = QKeySequenceEdit()
         self.list_sc_edit.setMinimumWidth(90)
-        self.list_sc_edit.setToolTip("Press a key combination to pop this menu at the cursor.")
+        self.list_sc_edit.setToolTip(
+            "Press a key combination to pop this menu at the cursor.\n"
+            "If it collides with another binding you can take it over.")
         self.list_sc_edit.keySequenceChanged.connect(self._on_list_shortcut_changed)
         sc_row.addWidget(self.list_sc_edit)
         sc_clear = QPushButton("Clear")
         sc_clear.clicked.connect(self._clear_list_shortcut)
         sc_row.addWidget(sc_clear)
+        self.undo_sc_btn = QPushButton("Restore")
+        self.undo_sc_btn.setToolTip(
+            "Give back the Krita shortcuts this menu took over\n"
+            "(enabled after an override)")
+        self.undo_sc_btn.clicked.connect(self._restore_overrides)
+        sc_row.addWidget(self.undo_sc_btn)
         sc_row.addStretch()
         st.addLayout(sc_row)
 
@@ -752,18 +922,52 @@ class ListMenuDialog(QDialog):
             self._update_left_shortcut()
 
     # ---------- Shortcut ----------
+    def _drop_pending(self):
+        if self.lists:
+            self._pending_overrides.pop(self.lists[self.current].get("name") or "", None)
+
+    def _revert_shortcut_field(self, value):
+        self._loading_sc = True
+        self.list_sc_edit.setKeySequence(QKeySequence(value or ""))
+        self._loading_sc = False
+
     def _on_list_shortcut_changed(self, seq):
         if self._loading_sc or not self.lists:
             return
-        self.lists[self.current]["shortcut"] = seq.toString(QKeySequence.PortableText)
+        name = self.lists[self.current].get("name") or ""
+        key = seq.toString(QKeySequence.PortableText)
+        previous = self.lists[self.current].get("shortcut", "") or ""
+        # A new key invalidates the override accepted for the previous one.
+        self._pending_overrides.pop(name, None)
+        if not key or key == previous:
+            self.lists[self.current]["shortcut"] = key
+            return
+        conflicts = self._conflicts_for(key)
+        if conflicts and not self._ask_override(key, conflicts):
+            self._revert_shortcut_field(previous)
+            return
+        self.lists[self.current]["shortcut"] = key
+        records = []
+        for kind, label, owner in conflicts:
+            if kind == "list":
+                owner["shortcut"] = ""      # in-memory only: Cancel discards it
+                continue
+            records.append({
+                "id": owner.objectName(),
+                "label": label,
+                "key": key,
+                "prev_runtime": self._action_shortcuts(owner),
+                "action": owner,            # external part is applied on accept()
+            })
+        if records:
+            self._pending_overrides[name] = records
 
     def _clear_list_shortcut(self):
         if not self.lists:
             return
+        self._drop_pending()
         self.lists[self.current]["shortcut"] = ""
-        self._loading_sc = True
-        self.list_sc_edit.setKeySequence(QKeySequence(""))
-        self._loading_sc = False
+        self._revert_shortcut_field("")
 
     def _update_left_shortcut(self):
         if not self.lists:
@@ -772,6 +976,7 @@ class ListMenuDialog(QDialog):
         self.list_sc_edit.setKeySequence(
             self.lists[self.current].get("shortcut", ""))
         self._loading_sc = False
+        self._update_undo_button()
 
     # ---------- Current menu items ----------
     @staticmethod
@@ -1310,6 +1515,15 @@ class ListMenuDialog(QDialog):
 
     # ---------- Conflict check ----------
     def _check_conflicts(self):
+        """Message for a *leftover* conflict, or None (accepted overrides clear theirs)."""
+        live = {}
+        try:
+            for a in Krita.instance().actions():
+                label = (a.text() or a.objectName() or "").replace("&", "").strip()
+                for s in self._action_shortcuts(a):
+                    live.setdefault(s, label or a.objectName())
+        except Exception as e:
+            print("menubelt: cannot list actions: %s" % e)
         used = {}
         for lst in self.lists:
             key = lst.get("shortcut", "")
@@ -1319,13 +1533,16 @@ class ListMenuDialog(QDialog):
                 return (f"Lists \u201c{used[key]}\u201d and \u201c{lst['name']}\u201d both "
                         f"use shortcut \u201c{key}\u201d.")
             used[key] = lst["name"]
-            if key in self._krita_shortcuts:
+            if key in live:
                 return (f"Shortcut \u201c{key}\u201d for list \u201c{lst['name']}\u201d "
-                        f"is already used by a Krita action.")
+                        f"is already used by Krita action \u201c{live[key]}\u201d.")
         return None
 
     # ---------- Save ----------
     def accept(self):
+        # Unbinding a Krita action is an external side effect, so it happens only
+        # here: cancelling the dialog must leave Krita untouched.
+        self._apply_pending_overrides()
         conflict = self._check_conflicts()
         if conflict:
             QMessageBox.warning(self, "Shortcut conflict", conflict)
