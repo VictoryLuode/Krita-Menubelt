@@ -27,6 +27,14 @@ Or watch on [YouTube](https://youtu.be/hjSDBv3bs3Q).
 - **Shortcut takeover** — a key that is already taken can be overridden: the other binding is unbound automatically, and for a Krita action that removal survives a restart.
 - **Live preview · Export / Import · conflict detection.**
 
+## What's new in 1.0.1
+
+- **Script library** — manage your own Python from the editor (*New… / Edit… / Rename… / Delete / Folder*, with **Save & Run**) and drop any script into a menu; scripts run with Krita handles pre-injected. Ships with `luminosity_view.py`, a non-destructive *Luminosity (ITU-R BT.709)* view.
+- **Shortcut takeover** — if a list shortcut is already taken, override it and the other binding is unbound automatically (for a Krita action it stays unbound after a restart; *Restore* hands it back).
+- **Bindable in Krita's Keyboard Shortcuts dialog** — `actions/menubelt.action` is part of the release now.
+
+Full changelog: [RELEASE_NOTES.md](RELEASE_NOTES.md).
+
 ## Install
 
 > **Requires Krita 5.x** (developed against 5.3).
@@ -38,7 +46,7 @@ Or watch on [YouTube](https://youtu.be/hjSDBv3bs3Q).
 - [ ] macOS (untested)
 - [ ] Android (no Python plugins yet)
 
-1. Download the latest `menubelt.zip` from [Releases](../../releases).
+1. Download `menubelt_v1.0.1.zip` (or the newest `menubelt_v*.zip`) from [Releases](../../releases).
 2. Unzip and copy the `pykrita/` and `actions/` folders into your Krita resource dir
    (Windows `%APPDATA%/krita/`, Linux `~/.config/krita/`).
 3. Restart Krita, then enable it in **Settings → Configure Krita → Python Plugin Manager**.
