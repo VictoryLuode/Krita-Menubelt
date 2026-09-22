@@ -10,10 +10,20 @@ After loading, items are normalised to dicts {"id", "label"} internally.
 
 import json
 import os
+import traceback
 
 from krita import Krita
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+try:                      # Selection is part of the Krita scripting API
+    from krita import Selection
+except ImportError:       # pragma: no cover - very old Krita builds
+    Selection = None
+
+PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(PLUGIN_DIR, "config.json")
+
+# Script library: one .py file per script, managed from the 'Scripts' add-source.
+SCRIPTS_DIR = os.path.join(PLUGIN_DIR, "scripts")
 
 # The authoritative LAYER blend-mode ids (from KoCompositeOpRegistry.h). These are
 # the values Node.setBlendingMode() accepts — NOT brush blend modes.
@@ -202,6 +212,12 @@ def _clean_items(items):
             elif it.get("brush") is not None:
                 out.append({"brush": it.get("brush", ""),
                             "label": it.get("label", "") or ""})
+            elif it.get("script") is not None:
+                out.append({"script": it.get("script", ""),
+                            "label": it.get("label", "") or ""})
+            elif it.get("viewmode") is not None:
+                out.append({"viewmode": it.get("viewmode", ""),
+                            "label": it.get("label", "") or ""})
             elif it.get("name") is not None:
                 out.append({
                     "name": it.get("name", ""),
@@ -262,6 +278,12 @@ def _serialize_items(items):
                         "label": it.get("label", "") or ""})
         elif it.get("brush") is not None:
             out.append({"brush": it.get("brush", ""),
+                        "label": it.get("label", "") or ""})
+        elif it.get("script") is not None:
+            out.append({"script": it.get("script", ""),
+                        "label": it.get("label", "") or ""})
+        elif it.get("viewmode") is not None:
+            out.append({"viewmode": it.get("viewmode", ""),
                         "label": it.get("label", "") or ""})
         elif it.get("name") is not None:
             out.append({
@@ -625,6 +647,271 @@ def run_brush(name):
                 continue
     except Exception as e:
         print(f"run_brush error: {e}")
+
+
+# ---------- Script library (menu items that run a .py file) ----------
+SCRIPT_TEMPLATE = '''"""MenuBelt script.
+
+Injected names: krita / app (the Krita instance), document / doc, window, view,
+layer / node (the active node) and the Krita class itself.
+"""
+
+if document is None:
+    raise RuntimeError("MenuBelt: no active document")
+
+print("Hello from MenuBelt:", document.name())
+'''
+
+
+def ensure_scripts_dir():
+    """Create the script library folder if needed; returns its path."""
+    try:
+        os.makedirs(SCRIPTS_DIR, exist_ok=True)
+    except OSError as e:
+        print(f"MenuBelt: cannot create {SCRIPTS_DIR}: {e}")
+    return SCRIPTS_DIR
+
+
+def script_filename(name):
+    """Normalise a user supplied script name into a library file name."""
+    fn = os.path.basename(str(name or "").strip())
+    if fn.lower().endswith(".py"):
+        fn = fn[:-3].strip() + ".py"
+    elif fn:
+        fn += ".py"
+    return fn
+
+
+def list_scripts():
+    """Return [(filename, label)] for the library, sorted by label."""
+    out = []
+    try:
+        for fn in os.listdir(SCRIPTS_DIR):
+            if fn.lower().endswith(".py") and not fn.startswith("_"):
+                out.append((fn, fn[:-3]))
+    except OSError:
+        pass
+    out.sort(key=lambda pair: pair[1].lower())
+    return out
+
+
+def script_path(name):
+    return os.path.join(SCRIPTS_DIR, script_filename(name))
+
+
+def read_script(name):
+    try:
+        with open(script_path(name), "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def write_script(name, code):
+    """Create/overwrite a library script. Returns the stored file name ('' on failure)."""
+    fn = script_filename(name)
+    if not fn:
+        return ""
+    ensure_scripts_dir()
+    try:
+        with open(os.path.join(SCRIPTS_DIR, fn), "w", encoding="utf-8", newline="\n") as f:
+            f.write(code if code is not None else "")
+        return fn
+    except OSError as e:
+        print(f"MenuBelt: cannot write script {fn}: {e}")
+        return ""
+
+
+def delete_script(name):
+    try:
+        os.remove(script_path(name))
+        return True
+    except OSError as e:
+        print(f"MenuBelt: cannot delete script {name}: {e}")
+        return False
+
+
+def rename_script(old, new):
+    """Rename a library script. Returns the new file name ('' on failure)."""
+    old_fn, new_fn = script_filename(old), script_filename(new)
+    if not old_fn or not new_fn or old_fn == new_fn:
+        return ""
+    if os.path.exists(os.path.join(SCRIPTS_DIR, new_fn)):
+        return ""
+    try:
+        os.replace(os.path.join(SCRIPTS_DIR, old_fn), os.path.join(SCRIPTS_DIR, new_fn))
+        return new_fn
+    except OSError as e:
+        print(f"MenuBelt: cannot rename {old_fn}: {e}")
+        return ""
+
+
+def _report(title, text):
+    """Show a short error dialog and never fail while doing so."""
+    print(f"MenuBelt: {title}: {text}")
+    try:
+        from PyQt5.QtWidgets import QMessageBox
+        box = QMessageBox()
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("MenuBelt")
+        box.setText(title)
+        box.setInformativeText(text)
+        box.exec_()
+    except Exception:
+        pass
+
+
+def run_script(name):
+    """Run a library script, with Krita handles injected into its namespace."""
+    fn = script_filename(name)
+    if not fn:
+        return
+    path = os.path.join(SCRIPTS_DIR, fn)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            code = f.read()
+    except OSError as e:
+        _report("Script not found", f"{fn}\n{e}")
+        return
+
+    app = Krita.instance()
+    doc = app.activeDocument()
+    win = app.activeWindow()
+    try:
+        view = win.activeView() if win is not None else None
+    except Exception:
+        view = None
+    node = doc.activeNode() if doc is not None else None
+    namespace = {
+        "__name__": "__menubelt_script__",
+        "__file__": path,
+        "Krita": Krita, "krita": app, "app": app,
+        "document": doc, "doc": doc,
+        "window": win, "view": view,
+        "layer": node, "node": node,
+    }
+    try:
+        exec(compile(code, path, "exec"), namespace)
+    except Exception:
+        traceback.print_exc()
+        lines = [ln for ln in traceback.format_exc().strip().splitlines() if ln.strip()]
+        _report("Script failed", "%s\n\n%s" % (fn, "\n".join(lines[-2:])))
+
+
+# ---------- View modes (non-destructive display overlays) ----------
+# A view mode builds a filter layer on top of the stack; triggering the same
+# item again removes it. The canvas data is never touched.
+VIEW_MODES = [
+    ("luminosity", "Luminosity View (ITU-R BT.709)"),
+]
+VIEW_LAYER_PREFIX = "MenuBelt View"
+# Desaturate filter ('desaturate') config: 'type' picks the method;
+# 1 = Luminosity (ITU-R BT.709)  (plugins/filters/colorsfilters).
+DESATURATE_LUMINOSITY_BT709 = 1
+
+
+def view_mode_label(mode_id):
+    return dict(VIEW_MODES).get(mode_id, mode_id)
+
+
+def view_layer_name(mode_id):
+    return f"{VIEW_LAYER_PREFIX} \u00b7 {view_mode_label(mode_id)}"
+
+
+def _walk_nodes(node):
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if current is None:
+            continue
+        yield current
+        try:
+            stack.extend(current.childNodes())
+        except Exception:
+            continue
+
+
+def find_view_layer(mode_id, doc=None):
+    """Return the existing view layer for mode_id, or None."""
+    try:
+        if doc is None:
+            doc = Krita.instance().activeDocument()
+    except Exception:
+        return None
+    if doc is None:
+        return None
+    wanted = view_layer_name(mode_id)
+    for node in _walk_nodes(doc.rootNode()):
+        try:
+            if node.name() == wanted:
+                return node
+        except Exception:
+            continue
+    return None
+
+
+def view_mode_active(mode_id):
+    return find_view_layer(mode_id) is not None
+
+
+def _create_view_layer(doc, mode_id):
+    """Build the view layer for mode_id at the top of the stack, or None."""
+    if mode_id != "luminosity" or Selection is None:
+        return None
+    try:
+        filt = Krita.instance().filter("desaturate")
+    except Exception:
+        filt = None
+    if filt is None:
+        return None
+    try:
+        selection = Selection()
+        selection.selectAll(doc.rootNode(), 255)
+        layer = doc.createFilterLayer(view_layer_name(mode_id), filt, selection)
+    except Exception as e:
+        print(f"MenuBelt: createFilterLayer failed: {e}")
+        return None
+    if layer is None:
+        return None
+    try:
+        doc.rootNode().addChildNode(layer, None)
+    except Exception as e:
+        print(f"MenuBelt: adding the view layer failed: {e}")
+        return None
+    # The layer owns its own filter configuration: configure it via layer.filter()
+    # (property changes on the object from Krita.instance().filter() are a no-op).
+    try:
+        live = layer.filter()
+        config = live.configuration()
+        config.setProperty("type", DESATURATE_LUMINOSITY_BT709)
+        live.setConfiguration(config)
+    except Exception as e:
+        print(f"MenuBelt: configuring the view layer failed: {e}")
+    return layer
+
+
+def run_view_mode(mode_id):
+    """Toggle a view mode: create the overlay layer, or remove it when present."""
+    if not isinstance(mode_id, str) or not mode_id:
+        return
+    try:
+        doc = Krita.instance().activeDocument()
+    except Exception:
+        return
+    if doc is None:
+        return
+    try:
+        existing = find_view_layer(mode_id, doc)
+        if existing is not None:
+            existing.remove()
+        elif _create_view_layer(doc, mode_id) is None:
+            _report("View mode unavailable",
+                    f"Krita refused to create the '{view_layer_name(mode_id)}' filter layer.")
+            return
+        doc.refreshProjection()
+    except Exception as e:
+        traceback.print_exc()
+        _report("View mode failed", str(e))
 
 
 # ---------- Refresh notification (reload Tools menu / Docker / shortcuts after editing) ----------

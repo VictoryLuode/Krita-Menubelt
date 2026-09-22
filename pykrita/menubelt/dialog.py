@@ -9,8 +9,8 @@ import os
 import sqlite3
 
 from krita import Krita, Palette
-from PyQt5.QtCore import QRect, QSize, Qt
-from PyQt5.QtGui import QBrush, QColor, QFont, QIcon, QKeySequence, QPixmap
+from PyQt5.QtCore import QRect, QSize, Qt, QUrl
+from PyQt5.QtGui import QBrush, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -41,16 +42,28 @@ from .config import (
     BRUSH_BLEND_MODES,
     BRUSH_VALUES,
     LAYER_BLEND_MODES,
+    SCRIPTS_DIR,
+    SCRIPT_TEMPLATE,
+    VIEW_MODES,
     add_overrides,
     build_config_dict,
     catalog_actions,
+    delete_script,
+    ensure_scripts_dir,
+    list_scripts,
     load_action_categories,
     load_config,
     load_overrides,
     notify_refresh,
     parse_config_dict,
     pop_overrides,
+    read_script,
+    rename_script,
+    run_script,
     save_config,
+    script_filename,
+    view_mode_label,
+    write_script,
 )
 from .shortcuts import find_shortcut_file
 from .shortcuts import restore as restore_shortcuts
@@ -71,6 +84,8 @@ TYPE_COLOR = "color"
 TYPE_SEP = "sep"
 TYPE_HEADER = "header"
 TYPE_TOGGLE = "toggle"
+TYPE_SCRIPT = "script"
+TYPE_VIEWMODE = "viewmode"
 
 
 def _load_preset_tags():
@@ -255,6 +270,56 @@ def _add_brush(dlg, payload):
 
 
 # Order = order shown in the "Add items" combo. Append new sources here to extend.
+def _script_label(filename):
+    """Default menu label for a library script (its file stem)."""
+    return os.path.splitext(filename or "")[0]
+
+
+def _enum_scripts(dlg, needle):
+    existing = {it.get("script") for it in dlg._cur_items()
+                if isinstance(it, dict) and it.get("script")}
+    for filename, label in list_scripts():
+        if needle and needle not in label.lower() and needle not in filename.lower():
+            continue
+        if filename in existing:
+            continue
+        yield (filename, label)
+
+
+def _add_script(dlg, payload):
+    filename = script_filename(payload)
+    if not filename:
+        return
+    existing = {it.get("script") for it in dlg._cur_items()
+                if isinstance(it, dict) and it.get("script")}
+    if filename in existing:
+        return
+    dlg._cur_items().append({"script": filename, "label": ""})
+    dlg._render_items()
+
+
+def _enum_view_modes(dlg, needle):
+    existing = {it.get("viewmode") for it in dlg._cur_items()
+                if isinstance(it, dict) and it.get("viewmode")}
+    for mode_id, label in VIEW_MODES:
+        if needle and needle not in label.lower() and needle not in mode_id.lower():
+            continue
+        if mode_id in existing:
+            continue
+        yield (mode_id, label)
+
+
+def _add_view_mode(dlg, payload):
+    mode_id = payload
+    existing = {it.get("viewmode") for it in dlg._cur_items()
+                if isinstance(it, dict) and it.get("viewmode")}
+    if mode_id in existing:
+        return
+    dlg._cur_items().append({"viewmode": mode_id,
+                             "label": view_mode_label(mode_id)})
+    dlg._render_items()
+
+
 ADD_SOURCES = [
     AddSource("actions", "Krita Actions", TYPE_CMD, _enum_actions, _add_action),
     AddSource("blend", "Layer Blend Mode", TYPE_BLEND, _enum_blend, _add_blend),
@@ -262,6 +327,8 @@ ADD_SOURCES = [
     AddSource("bval", "Brush Value", TYPE_BVAL, _enum_brush_values, _add_brush_value),
     AddSource("palette", "Krita Palettes", TYPE_COLOR, _enum_palettes, _add_color),
     AddSource("brush", "Brushes", TYPE_BRUSH, _enum_brushes, _add_brush),
+    AddSource("script", "Scripts", TYPE_SCRIPT, _enum_scripts, _add_script),
+    AddSource("viewmode", "View Mode", TYPE_VIEWMODE, _enum_view_modes, _add_view_mode),
 ]
 
 
@@ -324,6 +391,74 @@ class _MenuItemDelegate(QStyledItemDelegate):
         p.drawText(QRect(x, option.rect.top(), option.rect.right() - x,
                          option.rect.height()),
                    Qt.AlignVCenter | Qt.AlignLeft, text)
+
+
+class _ScriptEditorDialog(QDialog):
+    """Editor for one library script: name + Python code (with Save & Run)."""
+
+    def __init__(self, parent=None, filename="", code=""):
+        super().__init__(parent)
+        self.setWindowTitle("MenuBelt Script")
+        self.resize(760, 520)
+        root = QVBoxLayout(self)
+        root.setSpacing(8)
+
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Name:"))
+        self.name_edit = QLineEdit(os.path.splitext(filename or "")[0])
+        self.name_edit.setPlaceholderText("my_script")
+        name_row.addWidget(self.name_edit, 1)
+        root.addLayout(name_row)
+
+        self.code_edit = QPlainTextEdit()
+        self.code_edit.setPlainText(code if code else SCRIPT_TEMPLATE)
+        mono = QFont("Consolas")
+        mono.setStyleHint(QFont.Monospace)
+        mono.setFixedPitch(True)
+        self.code_edit.setFont(mono)
+        root.addWidget(self.code_edit, 1)
+
+        hint = QLabel("Injected into the script: krita / app (the Krita instance), "
+                      "document / doc, window, view, layer / node (the active node).\n"
+                      "Stored as <name>.py in the MenuBelt script library folder.")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        row = QHBoxLayout()
+        run_btn = QPushButton("Save && Run")
+        run_btn.setToolTip("Save the file and run it once on the current document")
+        run_btn.clicked.connect(self._save_and_run)
+        row.addWidget(run_btn)
+        row.addStretch()
+        ok = QPushButton("OK")
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        row.addWidget(ok)
+        row.addWidget(cancel)
+        root.addLayout(row)
+
+    def _save(self):
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "MenuBelt", "Give the script a name first.")
+            return ""
+        fn = write_script(name, self.code_edit.toPlainText())
+        if not fn:
+            QMessageBox.warning(self, "MenuBelt", "Could not write the script file.")
+            return ""
+        return fn
+
+    def _save_and_run(self):
+        fn = self._save()
+        if fn:
+            run_script(fn)
+
+    def accept(self):
+        if not self._save():
+            return
+        super().accept()
 
 
 class ListMenuDialog(QDialog):
@@ -694,6 +829,28 @@ class ListMenuDialog(QDialog):
         tag_row.addWidget(self.tag_filter, 1)
         av.addWidget(self.tag_widget)
         self.tag_widget.setVisible(False)
+        # Script library actions: shown only when the script source is active.
+        self.script_widget = QWidget()
+        scr_row = QHBoxLayout(self.script_widget)
+        scr_row.setContentsMargins(0, 0, 0, 0)
+        for label, slot, tip in (
+                ("New…", self._new_script,
+                 "Create a new script file in the library folder"),
+                ("Edit…", self._edit_script,
+                 "Edit the selected script file"),
+                ("Rename…", self._rename_script_file,
+                 "Rename the selected script file (menu items follow)"),
+                ("Delete", self._delete_script_file,
+                 "Delete the selected script file from the library"),
+                ("Folder", self._open_scripts_folder,
+                 "Open the script library folder")):
+            b = QPushButton(label)
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            scr_row.addWidget(b)
+        scr_row.addStretch()
+        av.addWidget(self.script_widget)
+        self.script_widget.setVisible(False)
         search_row = QHBoxLayout()
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search…")
@@ -1002,6 +1159,10 @@ class ListMenuDialog(QDialog):
                 return "toggle:" + (it.get("toggle", "") or "")
             if it.get("brush") is not None:
                 return "brush:" + (it.get("brush", "") or "")
+            if it.get("script") is not None:
+                return "script:" + (it.get("script", "") or "")
+            if it.get("viewmode") is not None:
+                return "viewmode:" + (it.get("viewmode", "") or "")
             if it.get("name") is not None:
                 return it["name"]
         return None
@@ -1172,6 +1333,15 @@ class ListMenuDialog(QDialog):
                     typ, text = TYPE_BVAL, it.get("label", it["bval"])
                 elif it.get("color") is not None:
                     typ, text = TYPE_COLOR, it.get("label", it["color"])
+                elif it.get("script") is not None:
+                    typ = TYPE_SCRIPT
+                    fn = script_filename(it.get("script", ""))
+                    text = it.get("label", "") or _script_label(fn)
+                    if not os.path.exists(os.path.join(SCRIPTS_DIR, fn)):
+                        text += "  (missing)"
+                elif it.get("viewmode") is not None:
+                    typ = TYPE_VIEWMODE
+                    text = it.get("label", "") or view_mode_label(it["viewmode"])
                 elif it.get("sep"):
                     typ, text = TYPE_SEP, ""
                 elif it.get("header") is not None:
@@ -1213,7 +1383,15 @@ class ListMenuDialog(QDialog):
     def _show_item_details(self, item):
         """Fill the bottom detail box with API info for the selected add item."""
         if item is None or item.data(0, ROLE_TYPE) == TYPE_CAT:
-            self.detail_box.setText("")
+            src = self._current_source()
+            if src is not None and src.key == "script":
+                self.detail_box.setText(
+                    "No script selected.\n"
+                    "Folder: %s\n"
+                    "New… creates a file there (Edit… changes it); "
+                    "Add puts it into this menu." % SCRIPTS_DIR)
+            else:
+                self.detail_box.setText("")
             return
         src = self._current_source()
         payload = item.data(0, ROLE_TOKEN)
@@ -1250,6 +1428,22 @@ class ListMenuDialog(QDialog):
                 "id: %s\n"
                 "API: Krita.instance().activeWindow().activeView()\n"
                 "     .setCurrentBlendingMode('%s')" % (label, payload, payload))
+        elif item.data(0, ROLE_TYPE) == TYPE_SCRIPT and payload:
+            path = os.path.join(SCRIPTS_DIR, script_filename(payload))
+            self.detail_box.setText(
+                "Script: %s\n"
+                "file: %s\n"
+                "status: %s\n"
+                "run: exec() with krita/app, document/doc, window, view,\n"
+                "     layer/node injected" % (
+                    _script_label(payload), path,
+                    "found" if os.path.exists(path) else "MISSING"))
+        elif item.data(0, ROLE_TYPE) == TYPE_VIEWMODE and payload:
+            self.detail_box.setText(
+                "View mode: %s\n"
+                "Non-destructive: adds a filter layer on top of the stack.\n"
+                "Trigger the same item again to remove it.\n"
+                "API: Document.createFilterLayer('desaturate', type=1)" % view_mode_label(payload))
         else:
             self.detail_box.setText("")
 
@@ -1279,7 +1473,16 @@ class ListMenuDialog(QDialog):
 
     def _on_add_type_changed(self):
         self._update_tag_widget()
+        self._update_script_widget()
         self._reload_available()
+
+    def _update_script_widget(self):
+        """Show the script library actions only while the Scripts source is active."""
+        src = self._current_source()
+        is_script = src is not None and src.key == "script"
+        if is_script:
+            ensure_scripts_dir()
+        self.script_widget.setVisible(is_script)
 
     def _reload_available(self):
         self.add_tree.clear()
@@ -1376,6 +1579,80 @@ class ListMenuDialog(QDialog):
         # Double-click a leaf to add it; a category header just expands/collapses.
         if item is not None and item.data(0, ROLE_TYPE) != TYPE_CAT:
             self._add_selected()
+
+    # ---------- Script library (the Scripts add-source) ----------
+    def _selected_script(self):
+        item = self.add_tree.currentItem()
+        if item is None or item.data(0, ROLE_TYPE) != TYPE_SCRIPT:
+            return ""
+        return script_filename(item.data(0, ROLE_TOKEN) or "")
+
+    def _new_script(self):
+        if _ScriptEditorDialog(self).exec_() == QDialog.Accepted:
+            self._reload_available()
+
+    def _edit_script(self):
+        fn = self._selected_script()
+        if not fn:
+            QMessageBox.information(self, "MenuBelt", "Select a script in the list first.")
+            return
+        if _ScriptEditorDialog(self, fn, read_script(fn)).exec_() == QDialog.Accepted:
+            self._reload_available()
+
+    def _rename_script_file(self):
+        fn = self._selected_script()
+        if not fn:
+            QMessageBox.information(self, "MenuBelt", "Select a script in the list first.")
+            return
+        new_name, ok = QInputDialog.getText(self, "Rename Script", "New name:",
+                                            text=os.path.splitext(fn)[0])
+        if not ok or not new_name.strip():
+            return
+        new_fn = rename_script(fn, new_name)
+        if not new_fn:
+            QMessageBox.warning(
+                self, "MenuBelt",
+                "Could not rename the script (a script with that name may already exist).")
+            return
+        self._remap_script_items(fn, new_fn)
+        self._render_items()
+        self._reload_available()
+
+    def _delete_script_file(self):
+        fn = self._selected_script()
+        if not fn:
+            QMessageBox.information(self, "MenuBelt", "Select a script in the list first.")
+            return
+        reply = QMessageBox.question(
+            self, "Delete Script",
+            "Delete '%s' from the library?\n\n"
+            "Menu items using it keep their position but will report "
+            "'not found' when clicked." % fn,
+            QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        delete_script(fn)
+        self._reload_available()
+
+    def _open_scripts_folder(self):
+        path = ensure_scripts_dir()
+        try:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        except Exception:
+            QMessageBox.information(self, "MenuBelt", "Script folder:\n%s" % path)
+
+    def _remap_script_items(self, old_fn, new_fn):
+        """Follow a renamed script file from every menu item that uses it."""
+        def walk(items):
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                if it.get("script") == old_fn:
+                    it["script"] = new_fn
+                if isinstance(it.get("items"), list):
+                    walk(it["items"])
+        for lst in self.lists:
+            walk(lst.get("items", []))
 
     def _add_submenu(self):
         if not self.path:
