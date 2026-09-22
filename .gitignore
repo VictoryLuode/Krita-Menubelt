@@ -8,6 +8,9 @@ config.json
 # 发布产物（已上传到 GitHub Releases，不入库）
 *.zip
 
-# 本机专用（agent 规则 / 部署目标），不进公开仓库
+# 本机专用（agent 规则 / 部署目标 / 交接文档），不进公开仓库
 AGENTS.md
+CLAUDE.md
+.cursorrules
+docs/handoffs/
 deploy.local.bat
