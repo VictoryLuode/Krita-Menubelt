@@ -173,9 +173,14 @@ def find_shortcut_file(qt_dirs=(), env=None):
 
 
 def read_text(path):
-    """Return the file's text ('' when missing/unreadable). Line endings kept as-is."""
+    """Return the file's text ('' when missing/unreadable).
+
+    Line endings and undecodable bytes are preserved (surrogateescape), because
+    this is a *foreign* config file: whatever we do not touch must come back out
+    byte-identical.
+    """
     try:
-        with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
+        with open(path, "r", encoding="utf-8", errors="surrogateescape", newline="") as f:
             return f.read()
     except OSError:
         return ""
@@ -184,13 +189,13 @@ def read_text(path):
 def write_text(path, text):
     """Write `text` back (no-op if nothing would change). Line endings kept as-is."""
     try:
-        with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
+        with open(path, "r", encoding="utf-8", errors="surrogateescape", newline="") as f:
             if f.read() == text:
                 return False
     except OSError:
         pass
     try:
-        with open(path, "w", encoding="utf-8", newline="") as f:
+        with open(path, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
             f.write(text)
         return True
     except OSError as e:
