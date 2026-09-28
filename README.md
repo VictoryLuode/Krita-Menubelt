@@ -5,6 +5,8 @@
 [![X](https://img.shields.io/static/v1?label=X&message=@victoryluode&color=black&logo=x&logoColor=white)](https://x.com/victoryluode)
 [![Website](https://img.shields.io/static/v1?label=Website&message=victoryluode.com&color=ff5200)](https://www.victoryluode.com)
 
+<h1><img src="assets/menubelt-icon.png" width="56" alt=""> MenuBelt</h1>
+
 ![MenuBelt](assets/menubelt-poster.png)
 
 Build your own **multi-list action menus** in Krita and reach them from a **cursor popup**
