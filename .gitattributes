@@ -1,0 +1,10 @@
+# Keep one line ending everywhere: the repo, GitHub and every checkout get LF.
+# (bash, Python and Krita read LF; the KDE desktop/action files keep CRLF as shipped.)
+* text=auto eol=lf
+*.desktop text eol=crlf
+*.action  text eol=crlf
+
+*.png binary
+*.jpg binary
+*.mp4 binary
+*.zip binary
