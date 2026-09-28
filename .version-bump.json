@@ -1,0 +1,14 @@
+{
+  "_comment": "release.sh 的唯一配置。Krita 插件没有版本清单文件，所以本仓没有任何版本常量——git tag 就是唯一真源，发版笔记是它的投影。",
+  "notes_source": "RELEASE_NOTES.md",
+  "title_prefix": "MenuBelt",
+  "package": "",
+  "artifacts": "",
+  "summary_placeholder": "TODO: what changed, in the user's words",
+  "targets": [
+    {
+      "path": "RELEASE_NOTES.md",
+      "kind": "notes_heading"
+    }
+  ]
+}
