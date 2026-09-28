@@ -7,7 +7,7 @@
 
 <h1><img src="assets/menubelt-icon.png" width="56" alt=""> MenuBelt</h1>
 
-![MenuBelt](assets/menubelt-poster.png)
+![MenuBelt](assets/menubelt-hero.png)
 
 Build your own **multi-list action menus** in Krita and reach them from a **cursor popup**
 or the **Tools → MenuBelt** submenu — as a **linear List** or a **Blender-style radial Pie**.
